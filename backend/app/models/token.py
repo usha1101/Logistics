@@ -107,3 +107,4 @@ class TokenBlacklist(Base):
     __table_args__ = (
         Index("ix_token_blacklist_jti_expires", "jti", "expires_at"),
     )
+

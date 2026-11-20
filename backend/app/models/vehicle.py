@@ -15,6 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.database.base import Base
+from app.models.mixins import SoftDeleteMixin
 
 
 class VehicleType(str, enum.Enum):
@@ -39,7 +40,7 @@ class LocationSource(str, enum.Enum):
     GPS = "GPS"
 
 
-class Vehicle(Base):
+class Vehicle(Base, SoftDeleteMixin):
     __tablename__ = "vehicles"
     __table_args__ = (
         CheckConstraint("capacity_kg > 0", name="check_positive_vehicle_capacity"),
@@ -61,6 +62,8 @@ class Vehicle(Base):
             "heading_degrees IS NULL OR (heading_degrees >= 0.0 AND heading_degrees <= 360.0)",
             name="check_valid_heading",
         ),
+        Index("ix_vehicles_status_deleted", "status", "is_deleted"),
+        Index("ix_vehicles_type_status", "vehicle_type", "status"),
     )
 
     id: Mapped[str] = mapped_column(

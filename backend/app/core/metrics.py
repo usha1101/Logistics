@@ -106,3 +106,4 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             duration_seconds=duration,
         )
         return response
+

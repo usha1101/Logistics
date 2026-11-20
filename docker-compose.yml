@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: logipulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-logipulse_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-logipulse_prod_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-logipulse}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-logipulse_admin} -d ${POSTGRES_DB:-logipulse}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - logipulse-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: logipulse-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-logipulse_admin}:${POSTGRES_PASSWORD:-logipulse_prod_pass_2026}@postgres:5432/${POSTGRES_DB:-logipulse}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-prod-super-secret-jwt-key-logipulse-2026-enterprise-token-auth}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 15
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:3000,http://localhost:80
+      RATE_LIMIT_ENABLED: "true"
+      DB_POOL_SIZE: 20
+      DB_MAX_OVERFLOW: 10
+      METRICS_ENABLED: "true"
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - logipulse-net
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  logipulse-net:
+    driver: bridge

@@ -233,3 +233,4 @@ def test_production_config_validation():
             DATABASE_URL="postgresql://user:pass@localhost:5432/logipulse",
             ALLOWED_ORIGINS=["*"],
         )
+

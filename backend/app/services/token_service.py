@@ -209,3 +209,4 @@ def revoke_refresh_token(db: Session, raw_token: str) -> bool:
         db.commit()
         return True
     return False
+

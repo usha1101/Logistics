@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.database.base import Base
+from app.models.mixins import SoftDeleteMixin
 
 
 class OrderStatus(str, enum.Enum):
@@ -53,11 +54,12 @@ PERMITTED_STATUS_TRANSITIONS: Dict[str, Set[str]] = {
 }
 
 
-class Customer(Base):
+class Customer(Base, SoftDeleteMixin):
     __tablename__ = "customers"
     __table_args__ = (
         CheckConstraint("latitude >= -90.0 AND latitude <= 90.0", name="check_valid_customer_lat"),
         CheckConstraint("longitude >= -180.0 AND longitude <= 180.0", name="check_valid_customer_lon"),
+        Index("ix_customers_city_deleted", "city", "is_deleted"),
     )
 
     id: Mapped[str] = mapped_column(
@@ -177,13 +179,17 @@ class Customer(Base):
         return value
 
 
-class Order(Base):
+class Order(Base, SoftDeleteMixin):
     __tablename__ = "orders"
     __table_args__ = (
         CheckConstraint("total_weight_kg >= 0", name="check_non_negative_order_weight"),
         CheckConstraint("total_amount >= 0", name="check_non_negative_order_amount"),
         CheckConstraint("delivery_latitude >= -90.0 AND delivery_latitude <= 90.0", name="check_valid_delivery_lat"),
         CheckConstraint("delivery_longitude >= -180.0 AND delivery_longitude <= 180.0", name="check_valid_delivery_lon"),
+        Index("ix_orders_customer_created", "customer_id", "created_at"),
+        Index("ix_orders_status_created", "status", "created_at"),
+        Index("ix_orders_assigned_vehicle_status", "assigned_vehicle_id", "status"),
+        Index("ix_orders_deleted_status", "is_deleted", "status"),
     )
 
     id: Mapped[str] = mapped_column(

@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -17,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.database.base import Base
+from app.models.mixins import SoftDeleteMixin
 
 
 class WarehouseStatus(str, enum.Enum):
@@ -44,12 +46,13 @@ class StockStatus(str, enum.Enum):
     IN_STOCK = "IN_STOCK"
 
 
-class Warehouse(Base):
+class Warehouse(Base, SoftDeleteMixin):
     __tablename__ = "warehouses"
     __table_args__ = (
         CheckConstraint("total_capacity > 0", name="check_positive_total_capacity"),
         CheckConstraint("used_capacity >= 0", name="check_non_negative_used_capacity"),
         CheckConstraint("used_capacity <= total_capacity", name="check_used_within_total_capacity"),
+        Index("ix_warehouses_type_deleted", "warehouse_type", "is_deleted"),
     )
 
     id: Mapped[str] = mapped_column(
@@ -147,6 +150,7 @@ class InventoryItem(Base):
         CheckConstraint("quantity >= 0", name="check_non_negative_quantity"),
         CheckConstraint("reorder_level >= 0", name="check_non_negative_reorder_level"),
         CheckConstraint("unit_volume IS NULL OR unit_volume > 0", name="check_positive_unit_volume"),
+        Index("ix_inventory_items_wh_quantity", "warehouse_id", "quantity"),
     )
 
     id: Mapped[str] = mapped_column(

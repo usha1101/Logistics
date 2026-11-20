@@ -327,6 +327,7 @@ class SimulationTelemetry(Base):
         CheckConstraint("longitude >= -180.0 AND longitude <= 180.0", name="check_sim_telemetry_lon"),
         CheckConstraint("speed_kmph >= 0.0", name="check_sim_telemetry_speed"),
         Index("ix_sim_telemetry_sim_veh_rec", "simulation_id", "vehicle_id", "recorded_at"),
+        Index("ix_sim_telemetry_sim_recorded", "simulation_id", "recorded_at"),
     )
 
     id: Mapped[str] = mapped_column(

@@ -52,6 +52,17 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Check token revocation / blacklist status
+    jti = payload.get("jti")
+    if jti:
+        from app.services.token_service import is_token_blacklisted
+        if is_token_blacklisted(db, jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication token has been revoked",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     stmt = select(User).where(User.id == user_id)
     user = db.execute(stmt).scalar_one_or_none()
     if not user:
@@ -69,6 +80,19 @@ def get_current_user(
         )
 
     return user
+
+
+def get_current_token_payload(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer),
+) -> dict:
+    """Extracts raw validated token payload from current request credentials."""
+    if not credentials or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return decode_access_token(credentials.credentials)
 
 
 def require_roles(*allowed_roles: Union[UserRole, str]) -> Callable[[User], User]:

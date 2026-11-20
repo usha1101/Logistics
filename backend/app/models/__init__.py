@@ -49,6 +49,7 @@ from app.models.simulation import (
     SimulationVehicleStatus,
 )
 from app.models.report import ReportMetadata, ReportStatus, ReportType
+from app.models.token import RefreshToken, TokenBlacklist
 from app.models.user import User, UserRole
 from app.models.vehicle import (
     LocationSource,
@@ -129,4 +130,6 @@ __all__ = [
     "ReportMetadata",
     "ReportStatus",
     "ReportType",
+    "RefreshToken",
+    "TokenBlacklist",
 ]

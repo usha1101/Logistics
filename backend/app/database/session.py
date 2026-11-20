@@ -6,14 +6,27 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
 
-connect_args = {}
+from sqlalchemy.pool import QueuePool
+
+engine_kwargs = {
+    "pool_pre_ping": True,
+}
+
 if settings.DATABASE_URL.startswith("sqlite"):
-    connect_args["check_same_thread"] = False
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # Production-grade PostgreSQL connection pooling
+    engine_kwargs.update({
+        "poolclass": QueuePool,
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_timeout": settings.DB_POOL_TIMEOUT,
+        "pool_recycle": settings.DB_POOL_RECYCLE,
+    })
 
 engine = create_engine(
     settings.DATABASE_URL,
-    connect_args=connect_args,
-    pool_pre_ping=True,
+    **engine_kwargs,
 )
 
 

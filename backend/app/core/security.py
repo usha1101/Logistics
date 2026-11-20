@@ -43,13 +43,16 @@ def validate_password_strength(password: str) -> Optional[str]:
     return None
 
 
+import uuid
+
 def create_access_token(
     user_id: str,
     username: str,
     role: str,
     expires_delta: Optional[timedelta] = None,
+    jti: Optional[str] = None,
 ) -> str:
-    """Creates a signed JWT access token containing identity and role claims."""
+    """Creates a signed JWT access token containing identity, role claims, and unique jti."""
     now = datetime.now(timezone.utc)
     if expires_delta:
         expire = now + expires_delta
@@ -60,6 +63,7 @@ def create_access_token(
         "sub": user_id,
         "username": username,
         "role": role,
+        "jti": jti or str(uuid.uuid4()),
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
     }

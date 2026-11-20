@@ -1,19 +1,32 @@
-from datetime import timedelta
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_roles
+from app.api.deps import get_current_token_payload, get_current_user, require_roles
 from app.core.config import settings
 from app.core.security import (
-    create_access_token,
     hash_password,
     validate_password_strength,
     verify_password,
 )
 from app.database.session import get_db
 from app.models.user import User, UserRole
-from app.schemas.user import LoginRequest, TokenResponse, UserCreate, UserRead
+from app.schemas.user import (
+    LoginRequest,
+    LogoutRequest,
+    RefreshTokenRequest,
+    TokenRefreshResponse,
+    TokenResponse,
+    UserCreate,
+    UserRead,
+)
+from app.services.token_service import (
+    blacklist_access_token,
+    issue_token_pair,
+    revoke_refresh_token,
+    rotate_refresh_token,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -21,7 +34,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @router.post(
     "/login",
     response_model=TokenResponse,
-    summary="Authenticate user and obtain JWT access token",
+    summary="Authenticate user and obtain JWT access token pair",
 )
 def login(
     payload: LoginRequest,
@@ -51,19 +64,32 @@ def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    token = create_access_token(
-        user_id=user.id,
-        username=user.username,
-        role=user.role,
-        expires_delta=expires_delta,
-    )
+    access_token, refresh_token, expires_in = issue_token_pair(db, user)
 
     return TokenResponse(
-        access_token=token,
+        access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        expires_in=expires_in,
         user=UserRead.model_validate(user),
+    )
+
+
+@router.post(
+    "/refresh",
+    response_model=TokenRefreshResponse,
+    summary="Rotate refresh token and obtain a new access token",
+)
+def refresh_access_token(
+    payload: RefreshTokenRequest,
+    db: Session = Depends(get_db),
+) -> TokenRefreshResponse:
+    new_access, new_refresh, user, expires_in = rotate_refresh_token(db, payload.refresh_token)
+    return TokenRefreshResponse(
+        access_token=new_access,
+        refresh_token=new_refresh,
+        token_type="bearer",
+        expires_in=expires_in,
     )
 
 
@@ -80,17 +106,26 @@ def get_me(
 
 @router.post(
     "/logout",
-    summary="Client-side token disposal acknowledgement",
+    summary="Invalidate active token session",
 )
 def logout(
+    payload: Optional[LogoutRequest] = None,
     current_user: User = Depends(get_current_user),
+    token_payload: dict = Depends(get_current_token_payload),
+    db: Session = Depends(get_db),
 ) -> dict:
-    """
-    JWT access tokens are stateless. Client-side logout requires clearing
-    the token from browser storage or memory.
-    """
+    # 1. Invalidate active access token in blacklist
+    jti = token_payload.get("jti")
+    exp = token_payload.get("exp")
+    if jti and exp:
+        blacklist_access_token(db, jti=jti, user_id=current_user.id, exp_timestamp=exp)
+
+    # 2. Invalidate refresh token if provided
+    if payload and payload.refresh_token:
+        revoke_refresh_token(db, payload.refresh_token)
+
     return {
-        "message": "Successfully logged out. Stateless token must be discarded by client.",
+        "message": "Successfully logged out. Stateless token must be discarded by client. Tokens have been revoked.",
         "user_id": current_user.id,
     }
 

@@ -39,6 +39,15 @@ def setup_test_db():
     Base.metadata.drop_all(bind=engine_test)
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter_for_test():
+    """Reset rate limiter state before each test case."""
+    from app.core.rate_limiter import rate_limiter
+    rate_limiter.reset()
+    yield
+    rate_limiter.reset()
+
+
 @pytest.fixture
 def db_session() -> Generator[Session, None, None]:
     connection = engine_test.connect()

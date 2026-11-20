@@ -9,7 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import api_router
-from app.api.health import get_health_status
+from app.api.health import (
+    LivenessResponse,
+    ReadinessResponse,
+    get_health_status,
+    get_liveness_probe,
+    get_readiness_probe,
+)
 from app.core.config import settings
 from app.core.exceptions import (
     http_exception_handler,
@@ -21,6 +27,8 @@ from app.core.logging import (
     set_request_id,
     setup_logging,
 )
+from app.core.metrics import MetricsMiddleware, metrics_collector
+from app.core.rate_limiter import RateLimitMiddleware
 from app.schemas.common import HealthResponse
 from app.services.simulation.manager import simulation_manager
 
@@ -45,7 +53,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS configuration
+    # 1. API Rate Limiting Middleware
+    app.add_middleware(RateLimitMiddleware)
+
+    # 2. Prometheus Metrics Middleware
+    app.add_middleware(MetricsMiddleware)
+
+    # 3. CORS configuration
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.ALLOWED_ORIGINS,
@@ -54,7 +68,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Per-request Request-ID and structured logging middleware
+    # 4. Per-request Request-ID and structured logging middleware
     @app.middleware("http")
     async def request_context_middleware(request: Request, call_next):
         req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
@@ -80,7 +94,7 @@ def create_app() -> FastAPI:
     # Mount API routers
     app.include_router(api_router, prefix="/api/v1")
 
-    # Expose unprefixed /health endpoint for monitoring convenience
+    # Expose unprefixed /health endpoints for container / orchestrator probes
     app.add_api_route(
         "/health",
         get_health_status,
@@ -88,6 +102,29 @@ def create_app() -> FastAPI:
         response_model=HealthResponse,
         tags=["Health"],
     )
+    app.add_api_route(
+        "/health/live",
+        get_liveness_probe,
+        methods=["GET"],
+        response_model=LivenessResponse,
+        tags=["Health"],
+    )
+    app.add_api_route(
+        "/health/ready",
+        get_readiness_probe,
+        methods=["GET"],
+        response_model=ReadinessResponse,
+        tags=["Health"],
+    )
+
+    # Expose Prometheus-compatible /metrics endpoint
+    @app.get("/metrics", tags=["Observability"], response_class=Response)
+    def prometheus_metrics():
+        exposition = metrics_collector.generate_exposition_text()
+        return Response(
+            content=exposition,
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     return app
 

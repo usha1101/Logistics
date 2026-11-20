@@ -3,11 +3,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 from fastapi import WebSocket
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database.session import SessionLocal
+from app.models.disruption import Disruption, DisruptionStatus, DisruptionType
 from app.models.network import NetworkEdge, NetworkNode
+from app.models.order import Order, OrderStatus
 from app.models.simulation import (
     Simulation,
     SimulationEvent,
@@ -18,6 +20,7 @@ from app.models.simulation import (
     SimulationVehicleStatus,
 )
 from app.models.vehicle import Vehicle, VehicleStatus
+from app.models.warehouse import Warehouse
 from app.services.network_graph_service import NetworkGraphService, PathNotFoundError
 from app.services.simulation.clock import SimulationClock
 from app.services.simulation.events import create_simulation_event
@@ -79,6 +82,19 @@ class SimulationManager:
     def __init__(self):
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self._clocks: Dict[str, SimulationClock] = {}
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Register the running FastAPI application event loop."""
+        self._loop = loop
+
+    def get_event_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        if self._loop and self._loop.is_running():
+            return self._loop
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
 
     def get_clock(self, simulation: Simulation) -> SimulationClock:
         if simulation.id not in self._clocks:
@@ -410,6 +426,160 @@ class SimulationManager:
 
         return v_state
 
+    def load_eligible_orders(
+        self,
+        simulation_id: str,
+        db: Session,
+        order_ids: Optional[List[str]] = None,
+        max_orders: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Safely loads eligible production orders into a simulation as simulated vehicle runs.
+        - Does NOT modify production orders or vehicle states in place.
+        - Selects active/available vehicles matching capacity and warehouse.
+        - Maps order warehouse and delivery coordinates to nearest network nodes.
+        - Calculates deterministic shortest routes.
+        - Avoids assigning the same vehicle or order twice within the simulation run.
+        """
+        import math
+
+        sim = db.execute(select(Simulation).where(Simulation.id == simulation_id)).scalar_one_or_none()
+        if not sim:
+            raise SimulationNotFoundError(f"Simulation '{simulation_id}' not found")
+
+        # 1. Fetch eligible orders
+        # Eligible statuses: IN_TRANSIT, READY_FOR_DISPATCH, DISPATCHED, CONFIRMED, PROCESSING
+        order_query = select(Order).where(
+            Order.status.in_([
+                OrderStatus.IN_TRANSIT.value,
+                OrderStatus.READY_FOR_DISPATCH.value,
+                OrderStatus.DISPATCHED.value,
+                OrderStatus.CONFIRMED.value,
+                OrderStatus.PROCESSING.value,
+            ])
+        )
+        if order_ids:
+            order_query = order_query.where(Order.id.in_(order_ids))
+
+        orders = list(db.execute(order_query).scalars().all())
+
+        # Already assigned vehicles in this simulation
+        existing_vehicle_ids = {
+            vs.vehicle_id for vs in sim.vehicle_states
+        }
+
+        # Warehouses map to resolve network_node_id
+        warehouses_map = {w.id: w for w in db.execute(select(Warehouse)).scalars().all()}
+
+        # Network nodes
+        active_nodes = list(db.execute(select(NetworkNode).where(NetworkNode.is_active.is_(True))).scalars().all())
+        if not active_nodes:
+            raise RouteCalculationError("No active network nodes available for simulation routing")
+
+        def _distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+            R = 6371.0
+            phi1, phi2 = math.radians(lat1), math.radians(lat2)
+            dphi = math.radians(lat2 - lat1)
+            dlambda = math.radians(lon2 - lon1)
+            a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+            return 2.0 * R * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+
+        # Vehicles pool
+        all_vehicles = list(db.execute(select(Vehicle).where(Vehicle.is_active.is_(True))).scalars().all())
+        available_vehicles = [
+            v for v in all_vehicles
+            if v.id not in existing_vehicle_ids
+            and v.status not in (VehicleStatus.BREAKDOWN.value, VehicleStatus.MAINTENANCE.value, VehicleStatus.OFFLINE.value)
+        ]
+
+        loaded_items = []
+        skipped_orders = []
+
+        for ord_obj in orders:
+            if len(loaded_items) >= max_orders:
+                break
+
+            # Identify origin warehouse node
+            wh = warehouses_map.get(ord_obj.warehouse_id)
+            if not wh or not wh.network_node_id:
+                skipped_orders.append(f"{ord_obj.order_number}: Warehouse network node not mapped")
+                continue
+            origin_node_id = wh.network_node_id
+
+            # Identify destination customer node
+            customer_nodes = [n for n in active_nodes if n.node_type != "WAREHOUSE"]
+            candidate_nodes = customer_nodes if customer_nodes else active_nodes
+            dest_node = min(
+                candidate_nodes,
+                key=lambda n: _distance(ord_obj.delivery_latitude, ord_obj.delivery_longitude, n.latitude, n.longitude),
+            )
+            destination_node_id = dest_node.id
+
+            if origin_node_id == destination_node_id:
+                skipped_orders.append(f"{ord_obj.order_number}: Origin and destination nodes identical")
+                continue
+
+            # Select suitable vehicle
+            candidate_veh = None
+            if ord_obj.assigned_vehicle_id and ord_obj.assigned_vehicle_id not in existing_vehicle_ids:
+                matching = next((v for v in available_vehicles if v.id == ord_obj.assigned_vehicle_id), None)
+                if matching and matching.capacity_kg >= ord_obj.total_weight_kg:
+                    candidate_veh = matching
+
+            if not candidate_veh:
+                # Find best available vehicle with sufficient capacity
+                valid_pool = [
+                    v for v in available_vehicles
+                    if v.id not in existing_vehicle_ids and v.capacity_kg >= ord_obj.total_weight_kg
+                ]
+                if valid_pool:
+                    # Pick vehicle closest to warehouse or matching home warehouse
+                    home_matches = [v for v in valid_pool if v.home_warehouse_id == ord_obj.warehouse_id]
+                    candidate_veh = home_matches[0] if home_matches else valid_pool[0]
+
+            if not candidate_veh:
+                skipped_orders.append(f"{ord_obj.order_number}: No available vehicle with capacity >= {ord_obj.total_weight_kg}kg")
+                continue
+
+            # Assign vehicle to simulation route
+            try:
+                v_state = self.add_vehicle_to_simulation(
+                    simulation_id=simulation_id,
+                    vehicle_id=candidate_veh.id,
+                    origin_node_id=origin_node_id,
+                    destination_node_id=destination_node_id,
+                    db=db,
+                )
+                existing_vehicle_ids.add(candidate_veh.id)
+                available_vehicles = [v for v in available_vehicles if v.id != candidate_veh.id]
+
+                nodes_dict = {n.id: n.name for n in active_nodes}
+                loaded_items.append({
+                    "order_id": ord_obj.id,
+                    "order_number": ord_obj.order_number,
+                    "vehicle_id": candidate_veh.id,
+                    "vehicle_code": candidate_veh.vehicle_code,
+                    "origin_node_id": origin_node_id,
+                    "origin_node_name": nodes_dict.get(origin_node_id, "Warehouse Hub"),
+                    "destination_node_id": destination_node_id,
+                    "destination_node_name": nodes_dict.get(destination_node_id, "Customer Node"),
+                    "route_distance_km": round(_distance(
+                        next(n.latitude for n in active_nodes if n.id == origin_node_id),
+                        next(n.longitude for n in active_nodes if n.id == origin_node_id),
+                        dest_node.latitude,
+                        dest_node.longitude,
+                    ), 1),
+                })
+            except Exception as e:
+                skipped_orders.append(f"{ord_obj.order_number}: Routing error ({str(e)})")
+
+        return {
+            "simulation_id": simulation_id,
+            "loaded_count": len(loaded_items),
+            "assignments": loaded_items,
+            "skipped_orders": skipped_orders,
+        }
+
     # =========================================================================
     # SIMULATION MOVEMENT STEP (TICK)
     # =========================================================================
@@ -429,9 +599,58 @@ class SimulationManager:
         all_arrived = True
         has_vehicles = len(sim.vehicle_states) > 0
 
+        # Query active disruptions that affect this simulation or its vehicles
+        active_breakdowns: Set[str] = set()
+        active_disruptions = list(
+            db.execute(
+                select(Disruption).where(
+                    Disruption.status.in_([DisruptionStatus.ACTIVE.value, DisruptionStatus.DETECTED.value]),
+                    or_(
+                        Disruption.simulation_id == sim.id,
+                        Disruption.simulation_id.is_(None),
+                    ),
+                    Disruption.disruption_type == DisruptionType.VEHICLE_BREAKDOWN.value,
+                )
+            ).scalars().all()
+        )
+        for d in active_disruptions:
+            if d.affected_vehicle_id:
+                active_breakdowns.add(d.affected_vehicle_id)
+
         for vs in sim.vehicle_states:
             if vs.status == SimulationVehicleStatus.ARRIVED.value:
                 continue
+
+            # Check if vehicle is experiencing a simulated breakdown disruption
+            if vs.vehicle_id in active_breakdowns:
+                if vs.status != SimulationVehicleStatus.BREAKDOWN.value:
+                    vs.status = SimulationVehicleStatus.BREAKDOWN.value
+                    vs.current_speed_kmph = 0.0
+                    create_simulation_event(
+                        db=db,
+                        simulation_id=sim.id,
+                        vehicle_id=vs.vehicle_id,
+                        event_type=SimulationEventType.VEHICLE_POSITION_UPDATED,
+                        simulated_timestamp=simulated_now,
+                        event_data={"status": "BREAKDOWN", "reason": "Simulated vehicle breakdown fault"},
+                    )
+                    self._safe_async_broadcast(sim.id, {
+                        "event": SimulationEventType.VEHICLE_POSITION_UPDATED.value,
+                        "simulation_id": sim.id,
+                        "vehicle_id": vs.vehicle_id,
+                        "status": "BREAKDOWN",
+                        "speed_kmph": 0.0,
+                        "latitude": vs.current_latitude,
+                        "longitude": vs.current_longitude,
+                        "progress_percentage": vs.progress_percentage,
+                        "heading_degrees": vs.heading_degrees,
+                        "simulated_time": simulated_now.isoformat(),
+                    })
+                continue
+
+            # If vehicle was in breakdown but disruption is resolved, recover to EN_ROUTE
+            if vs.status == SimulationVehicleStatus.BREAKDOWN.value and vs.vehicle_id not in active_breakdowns:
+                vs.status = SimulationVehicleStatus.EN_ROUTE.value
 
             all_arrived = False
 
@@ -565,13 +784,25 @@ class SimulationManager:
         if simulation_id in self._running_tasks and not self._running_tasks[simulation_id].done():
             return  # Already running
 
+        loop = self.get_event_loop()
+        if not loop:
+            return
+
         try:
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(self._background_simulation_task(simulation_id))
+            # Check if we are inside the running loop thread
+            running = None
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+
+            if running is loop:
+                task = loop.create_task(self._background_simulation_task(simulation_id))
+            else:
+                task = asyncio.run_coroutine_threadsafe(self._background_simulation_task(simulation_id), loop)
             self._running_tasks[simulation_id] = task
-        except RuntimeError:
-            # Running outside an active event loop (e.g. synchronously during test init)
-            pass
+        except Exception as e:
+            logger.warning(f"Could not launch background task for simulation '{simulation_id}': {e}")
 
     def _stop_background_loop(self, simulation_id: str) -> None:
         if simulation_id in self._running_tasks:
@@ -607,11 +838,23 @@ class SimulationManager:
                     db.commit()
 
     def _safe_async_broadcast(self, simulation_id: str, message: Dict[str, Any]) -> None:
+        loop = self.get_event_loop()
+        if not loop:
+            return
+
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(ws_manager.broadcast(simulation_id, message))
-        except RuntimeError:
-            pass
+            running = None
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+
+            if running is loop:
+                loop.create_task(ws_manager.broadcast(simulation_id, message))
+            else:
+                asyncio.run_coroutine_threadsafe(ws_manager.broadcast(simulation_id, message), loop)
+        except Exception as e:
+            logger.warning(f"Failed to schedule async broadcast on simulation '{simulation_id}': {e}")
 
 
 # Global singleton instance

@@ -82,6 +82,17 @@ export const simulationService = {
     return data
   },
 
+  async loadOrders(
+    simulationId: string,
+    payload?: import('@/types/simulation').SimulationLoadOrdersRequest,
+  ): Promise<import('@/types/simulation').SimulationLoadOrdersResponse> {
+    const { data } = await apiClient.post<import('@/types/simulation').SimulationLoadOrdersResponse>(
+      `/simulations/${simulationId}/load-orders`,
+      payload ?? {},
+    )
+    return data
+  },
+
   async listVehicles(simulationId: string): Promise<SimulationVehicleRead[]> {
     const { data } = await apiClient.get<SimulationVehicleRead[]>(
       `/simulations/${simulationId}/vehicles`,

@@ -35,6 +35,8 @@ from app.schemas.simulation import (
     SimulationTelemetryRead,
     SimulationVehicleCreate,
     SimulationVehicleRead,
+    SimulationLoadOrdersRequest,
+    SimulationLoadOrdersResponse,
 )
 from app.services.simulation import (
     InvalidStateTransitionError,
@@ -369,6 +371,51 @@ def get_simulation_vehicle(
             detail=f"Vehicle '{vehicle_id}' not found in simulation '{simulation_id}'",
         )
     return _serialize_vehicle_state(vs)
+
+
+@router.post(
+    "/{simulation_id}/load-orders",
+    response_model=SimulationLoadOrdersResponse,
+    summary="Safely load eligible production orders into simulation without altering production data",
+)
+def load_simulation_orders(
+    simulation_id: str,
+    payload: SimulationLoadOrdersRequest = SimulationLoadOrdersRequest(),
+    current_user: User = Depends(require_roles(*SIMULATION_CONTROL_ROLES)),
+    db: Session = Depends(get_db),
+) -> SimulationLoadOrdersResponse:
+    try:
+        res = simulation_manager.load_eligible_orders(
+            simulation_id=simulation_id,
+            db=db,
+            order_ids=payload.order_ids,
+            max_orders=payload.max_orders,
+        )
+        return SimulationLoadOrdersResponse(**res)
+    except SimulationNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post(
+    "/{simulation_id}/step",
+    response_model=SimulationRead,
+    summary="Manually step or advance the simulation",
+)
+def step_simulation(
+    simulation_id: str,
+    wall_seconds: float = Query(1.0, ge=0.1, le=60.0),
+    current_user: User = Depends(require_roles(*SIMULATION_CONTROL_ROLES)),
+    db: Session = Depends(get_db),
+) -> SimulationRead:
+    try:
+        sim = simulation_manager.step_simulation(simulation_id, db=db, wall_seconds=wall_seconds)
+        if not sim:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Simulation '{simulation_id}' not found")
+        return _serialize_simulation(sim)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 # ============================================================================

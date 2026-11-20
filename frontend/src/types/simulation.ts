@@ -33,6 +33,30 @@ export interface SimulationVehicleCreate {
   destination_node_id: string
 }
 
+export interface SimulationLoadOrdersRequest {
+  order_ids?: string[]
+  max_orders?: number
+}
+
+export interface SimulationLoadOrdersItem {
+  order_id: string
+  order_number: string
+  vehicle_id: string
+  vehicle_code: string
+  origin_node_id: string
+  origin_node_name: string
+  destination_node_id: string
+  destination_node_name: string
+  route_distance_km: number
+}
+
+export interface SimulationLoadOrdersResponse {
+  simulation_id: string
+  loaded_count: number
+  assignments: SimulationLoadOrdersItem[]
+  skipped_orders: string[]
+}
+
 export interface SimulationVehicleRead {
   id: string
   simulation_id: string

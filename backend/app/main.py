@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,8 +22,16 @@ from app.core.logging import (
     setup_logging,
 )
 from app.schemas.common import HealthResponse
+from app.services.simulation.manager import simulation_manager
 
 logger = logging.getLogger("app.request")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Capture the active asyncio event loop so threadpool calls can launch background simulation ticks
+    simulation_manager.set_event_loop(asyncio.get_running_loop())
+    yield
 
 
 def create_app() -> FastAPI:
@@ -32,6 +42,7 @@ def create_app() -> FastAPI:
         version=settings.APP_VERSION,
         docs_url="/docs",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
 
     # CORS configuration

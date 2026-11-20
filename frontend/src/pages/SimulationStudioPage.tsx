@@ -32,7 +32,19 @@ export function SimulationStudioPage() {
 
   const [selectedSimId, setSelectedSimId] = useState<string | null>(null)
   const [wsConnected, setWsConnected] = useState(false)
-  const [livePositions, setLivePositions] = useState<Record<string, { lat: number; lon: number; progress: number; speed: number }>>({})
+  const [livePositions, setLivePositions] = useState<
+    Record<
+      string,
+      {
+        lat: number
+        lon: number
+        progress: number
+        speed: number
+        heading?: number
+        status?: string
+      }
+    >
+  >({})
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
 
@@ -148,6 +160,8 @@ export function SimulationStudioPage() {
               lon: msg.longitude!,
               progress: msg.progress_percentage ?? prev[msg.vehicle_id!]?.progress ?? 0,
               speed: msg.speed_kmph ?? prev[msg.vehicle_id!]?.speed ?? 45,
+              heading: msg.heading_degrees ?? prev[msg.vehicle_id!]?.heading,
+              status: msg.status ?? prev[msg.vehicle_id!]?.status,
             },
           }))
         } else {
@@ -206,6 +220,16 @@ export function SimulationStudioPage() {
     onSuccess: (res) => {
       setActionErr(null)
       setActionMsg(`Updated playback speed to ${res.simulation_speed_multiplier}x.`)
+      void queryClient.invalidateQueries({ queryKey: ['simulations'] })
+    },
+    onError: (err) => setActionErr(getApiErrorMessage(err)),
+  })
+
+  const loadOrdersMutation = useMutation({
+    mutationFn: () => simulationService.loadOrders(activeSim!.id, { max_orders: 8 }),
+    onSuccess: (res) => {
+      setActionErr(null)
+      setActionMsg(`Successfully loaded ${res.loaded_count} active order route(s) into simulation.`)
       void queryClient.invalidateQueries({ queryKey: ['simulations'] })
     },
     onError: (err) => setActionErr(getApiErrorMessage(err)),
@@ -312,10 +336,12 @@ export function SimulationStudioPage() {
       return {
         id: sv.vehicle_id,
         code: sv.vehicle_code ?? sv.vehicle_id.slice(0, 8),
-        status: sv.status,
+        status: live?.status ?? sv.status,
         latitude: live?.lat ?? sv.current_latitude,
         longitude: live?.lon ?? sv.current_longitude,
         speedKmph: live?.speed ?? sv.current_speed_kmph,
+        headingDegrees: live?.heading ?? sv.heading_degrees,
+        progressPercentage: live?.progress ?? sv.progress_percentage,
       }
     })
   }, [simVehicles, livePositions])
@@ -510,13 +536,34 @@ export function SimulationStudioPage() {
             heightClass="h-[430px]"
           />
 
-          {/* Assign Vehicle to Simulation */}
+          {/* Assign Vehicle & Load Active Orders */}
           {activeSim && canControlSim && (
-            <div className="rounded-lg border border-surface-container-highest bg-surface-container-low p-4 space-y-2">
-              <div className="font-display text-xs font-bold uppercase tracking-wider text-outline">
-                Dispatch Vehicle Inside Twin
+            <div className="rounded-lg border border-surface-container-highest bg-surface-container-low p-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-surface-container-highest/60 pb-3">
+                <div>
+                  <div className="font-display text-xs font-bold uppercase tracking-wider text-primary">
+                    Simulation Order & Fleet Dispatch
+                  </div>
+                  <p className="text-[11px] text-secondary">
+                    Load eligible production orders into this digital twin run or manually dispatch an individual corridor vehicle.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={loadOrdersMutation.isPending}
+                  onClick={() => loadOrdersMutation.mutate()}
+                  className="inline-flex items-center gap-1.5 rounded bg-surface-container px-3 py-1.5 font-display text-xs font-bold text-lime hover:bg-surface-bright disabled:opacity-40"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Load Active Orders Into Twin
+                </button>
               </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-4 text-xs">
+
+              <div className="space-y-1.5">
+                <div className="font-display text-[11px] font-semibold text-secondary">
+                  Manual Route Dispatch
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-4 text-xs">
                 <select
                   value={assignVehicleId}
                   onChange={(e) => setAssignVehicleId(e.target.value)}
@@ -574,7 +621,8 @@ export function SimulationStudioPage() {
                 </button>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
           {/* Simulation Event Stream */}
           <div className="rounded-lg border border-surface-container-highest bg-surface-container-low p-4 space-y-2">

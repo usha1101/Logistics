@@ -219,3 +219,87 @@ def test_step_simulation_when_not_running(db_session):
     assert res.status == SimulationStatus.CREATED.value
 
 
+def test_simulation_load_eligible_orders_and_disruption(db_session):
+    from app.models.network import NetworkNode, NetworkEdge
+    from app.models.warehouse import Warehouse
+    from app.models.order import Customer, Order, OrderStatus
+    from app.models.vehicle import Vehicle, VehicleStatus
+    from app.models.disruption import Disruption, DisruptionStatus, DisruptionType
+    from app.services.simulation.manager import simulation_manager
+
+    # 1. Create network nodes
+    n1 = NetworkNode(name="Hub North", node_type="WAREHOUSE", latitude=12.97, longitude=77.59, address="Hub", region="Central", is_active=True)
+    n2 = NetworkNode(name="Point South", node_type="CUSTOMER", latitude=12.93, longitude=77.62, address="Point", region="South", is_active=True)
+    db_session.add_all([n1, n2])
+    db_session.flush()
+
+    edge = NetworkEdge(source_node_id=n1.id, target_node_id=n2.id, distance_km=6.0, estimated_travel_minutes=15, road_type="Primary", is_active=True)
+    db_session.add(edge)
+
+    # 2. Create warehouse, customer, order
+    wh = Warehouse(network_node_id=n1.id, warehouse_code="WH-TEST", warehouse_type="DISTRIBUTION_CENTER", total_capacity=5000.0, used_capacity=0.0, status="OPERATIONAL")
+    cust = Customer(customer_code="CUST-TEST", name="Test Customer", phone="+919876543210", address_line="South", city="Bengaluru", state="Karnataka", postal_code="560001", latitude=12.93, longitude=77.62, is_active=True)
+    db_session.add_all([wh, cust])
+    db_session.flush()
+
+    veh = Vehicle(vehicle_code="TEST-VEH-1", registration_number="KA-01-AB-1234", vehicle_type="DELIVERY_VAN", manufacturer="Tata", model="Ace", capacity_kg=500.0, current_load_kg=0.0, status=VehicleStatus.AVAILABLE.value, home_warehouse_id=wh.id, current_latitude=12.97, current_longitude=77.59, is_active=True)
+    db_session.add(veh)
+    db_session.flush()
+
+    ord1 = Order(
+        order_number="ORD-TEST-001",
+        customer_id=cust.id,
+        warehouse_id=wh.id,
+        status=OrderStatus.READY_FOR_DISPATCH.value,
+        expected_delivery_at=datetime.now(timezone.utc),
+        delivery_address="Point South",
+        delivery_latitude=12.93,
+        delivery_longitude=77.62,
+        total_weight_kg=50.0,
+        total_amount=1000.0,
+    )
+    db_session.add(ord1)
+    db_session.commit()
+
+    # 3. Create simulation and load orders
+    sim = simulation_manager.create_simulation(db_session, name="Load Orders Test")
+    res = simulation_manager.load_eligible_orders(sim.id, db_session, order_ids=[ord1.id])
+    assert res["loaded_count"] == 1
+    assert len(res["assignments"]) == 1
+    assert res["assignments"][0]["vehicle_code"] == "TEST-VEH-1"
+
+    # Verify duplicate load is safely rejected / skipped
+    res2 = simulation_manager.load_eligible_orders(sim.id, db_session, order_ids=[ord1.id])
+    assert res2["loaded_count"] == 0
+
+    # 4. Start simulation and step
+    sim = simulation_manager.start_simulation(sim.id, db_session)
+    assert sim.status == SimulationStatus.RUNNING.value
+
+    # Vehicle departs and moves
+    simulation_manager.step_simulation(sim.id, db_session, wall_seconds=5.0)
+    db_session.refresh(sim)
+    vs = sim.vehicle_states[0]
+    assert vs.status == SimulationVehicleStatus.EN_ROUTE.value
+    assert vs.progress_percentage > 0.0
+
+    # 5. Inject a breakdown disruption on vehicle
+    disr = Disruption(
+        disruption_code="DISR-BRK-TEST",
+        disruption_type=DisruptionType.VEHICLE_BREAKDOWN.value,
+        severity="CRITICAL",
+        status=DisruptionStatus.ACTIVE.value,
+        title="Test Breakdown",
+        simulation_id=sim.id,
+        affected_vehicle_id=veh.id,
+    )
+    db_session.add(disr)
+    db_session.commit()
+
+    # Step simulation again: vehicle should be stopped and marked BREAKDOWN
+    simulation_manager.step_simulation(sim.id, db_session, wall_seconds=5.0)
+    db_session.refresh(vs)
+    assert vs.status == SimulationVehicleStatus.BREAKDOWN.value
+    assert vs.current_speed_kmph == 0.0
+
+

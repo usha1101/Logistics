@@ -26,6 +26,30 @@ class SimulationVehicleCreate(BaseModel):
     destination_node_id: str = Field(..., description="UUID of destination network node")
 
 
+class SimulationLoadOrdersRequest(BaseModel):
+    order_ids: Optional[List[str]] = Field(default=None, description="Optional specific order IDs to load; if omitted, all eligible orders are considered")
+    max_orders: int = Field(default=10, ge=1, le=50, description="Maximum number of eligible orders to load")
+
+
+class SimulationLoadOrdersItem(BaseModel):
+    order_id: str
+    order_number: str
+    vehicle_id: str
+    vehicle_code: str
+    origin_node_id: str
+    origin_node_name: str
+    destination_node_id: str
+    destination_node_name: str
+    route_distance_km: float
+
+
+class SimulationLoadOrdersResponse(BaseModel):
+    simulation_id: str
+    loaded_count: int
+    assignments: List[SimulationLoadOrdersItem]
+    skipped_orders: List[str] = Field(default_factory=list)
+
+
 class SimulationVehicleRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

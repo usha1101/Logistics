@@ -27,6 +27,8 @@ export interface MapVehicleMarker {
   latitude: number
   longitude: number
   speedKmph?: number | null
+  headingDegrees?: number | null
+  progressPercentage?: number | null
   selected?: boolean
 }
 
@@ -81,9 +83,9 @@ export function BengaluruNetworkMap({
       zoomControl: true,
     })
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
-      maxZoom: 18,
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+      maxZoom: 19,
     }).addTo(map)
 
     const layerGroup = L.layerGroup().addTo(map)
@@ -153,16 +155,34 @@ export function BengaluruNetworkMap({
       if (!Number.isFinite(v.latitude) || !Number.isFinite(v.longitude)) return
       boundsPoints.push([v.latitude, v.longitude])
       const color = getVehicleColor(v.status)
-      const marker = L.circleMarker([v.latitude, v.longitude], {
-        radius: v.selected ? 9 : 7,
-        color: v.selected ? '#C6F432' : '#0B0B0C',
-        weight: v.selected ? 3 : 2,
-        fillColor: color,
-        fillOpacity: 1,
+      const heading = typeof v.headingDegrees === 'number' ? Math.round(v.headingDegrees) : null
+
+      // Create vehicle marker with heading direction indicator
+      const html = `
+        <div style="position: relative; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;">
+          <div style="width: 14px; height: 14px; border-radius: 50%; background-color: ${color}; border: 2px solid ${v.selected ? '#C6F432' : '#0B0B0C'}; box-shadow: 0 0 6px rgba(0,0,0,0.5);"></div>
+          ${
+            heading !== null
+              ? `<div style="position: absolute; width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 7px solid ${color}; transform: translateY(-11px) rotate(${heading}deg); transform-origin: 50% 11px;"></div>`
+              : ''
+          }
+        </div>
+      `
+      const icon = L.divIcon({
+        className: 'vehicle-marker-icon',
+        html,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
       })
+
+      const marker = L.marker([v.latitude, v.longitude], { icon })
       const speedText =
         v.speedKmph !== null && v.speedKmph !== undefined ? ` • ${v.speedKmph.toFixed(0)} km/h` : ''
-      marker.bindTooltip(`${v.code} (${v.status})${speedText}`, { direction: 'top' })
+      const progressText =
+        typeof v.progressPercentage === 'number' ? ` • ${v.progressPercentage.toFixed(0)}%` : ''
+      const headingText = heading !== null ? ` • ${heading}°` : ''
+
+      marker.bindTooltip(`${v.code} (${v.status})${speedText}${progressText}${headingText}`, { direction: 'top' })
       if (onSelectVehicle) {
         marker.on('click', () => onSelectVehicle(v.id))
       }

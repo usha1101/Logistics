@@ -92,3 +92,4 @@ def downgrade() -> None:
         batch_op.drop_index(batch_op.f('ix_vehicles_is_deleted'))
         batch_op.drop_column('deleted_at')
         batch_op.drop_column('is_deleted')
+

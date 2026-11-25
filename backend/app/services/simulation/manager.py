@@ -39,41 +39,10 @@ logger = logging.getLogger("simulation_manager")
 DEFAULT_VEHICLE_SPEED_KMPH = 45.0
 
 
-class WebSocketConnectionManager:
-    """Manages active WebSocket connections grouped by simulation room."""
+from app.core.broker import broker as ws_manager, BaseBroadcastBroker, LocalBroadcastBroker
 
-    def __init__(self):
-        self._rooms: Dict[str, Set[WebSocket]] = {}
-
-    async def connect(self, simulation_id: str, websocket: WebSocket) -> None:
-        await websocket.accept()
-        if simulation_id not in self._rooms:
-            self._rooms[simulation_id] = set()
-        self._rooms[simulation_id].add(websocket)
-        logger.info(f"WebSocket connected to simulation room '{simulation_id}'. Total: {len(self._rooms[simulation_id])}")
-
-    def disconnect(self, simulation_id: str, websocket: WebSocket) -> None:
-        if simulation_id in self._rooms and websocket in self._rooms[simulation_id]:
-            self._rooms[simulation_id].remove(websocket)
-            if not self._rooms[simulation_id]:
-                del self._rooms[simulation_id]
-        logger.info(f"WebSocket disconnected from simulation room '{simulation_id}'.")
-
-    async def broadcast(self, simulation_id: str, message: Dict[str, Any]) -> None:
-        if simulation_id not in self._rooms:
-            return
-        dead_sockets: List[WebSocket] = []
-        for ws in self._rooms[simulation_id]:
-            try:
-                await ws.send_json(message)
-            except Exception as e:
-                logger.warning(f"Error broadcasting to WebSocket: {e}")
-                dead_sockets.append(ws)
-        for ws in dead_sockets:
-            self.disconnect(simulation_id, ws)
-
-
-ws_manager = WebSocketConnectionManager()
+# Alias for backward compatibility with existing imports
+WebSocketConnectionManager = LocalBroadcastBroker
 
 
 class SimulationManager:

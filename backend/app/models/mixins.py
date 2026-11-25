@@ -31,3 +31,4 @@ class SoftDeleteMixin:
         """Restores a soft-deleted entity back to active status."""
         self.is_deleted = False
         self.deleted_at = None
+

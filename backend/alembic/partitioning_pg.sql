@@ -71,3 +71,4 @@ CREATE INDEX IF NOT EXISTS ix_sim_telemetry_p_sim_veh_rec
     ON simulation_telemetry_partitioned (simulation_id, vehicle_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS ix_sim_telemetry_p_sim_rec 
     ON simulation_telemetry_partitioned (simulation_id, recorded_at DESC);
+

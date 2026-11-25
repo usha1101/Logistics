@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Optional, Union
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -49,6 +49,11 @@ class Settings(BaseSettings):
 
     # Observability & Metrics
     METRICS_ENABLED: bool = True
+
+    # Distributed Execution & Redis Broker (Phase 3)
+    REDIS_URL: Optional[str] = None
+    REDIS_PUBSUB_ENABLED: bool = True
+    BACKGROUND_WORKER_ENABLED: bool = True
 
     # Multi-Agent AI Configuration (Stage 10)
     GEMINI_API_KEY: str = ""

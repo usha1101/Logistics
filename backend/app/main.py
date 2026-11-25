@@ -27,8 +27,10 @@ from app.core.logging import (
     set_request_id,
     setup_logging,
 )
+from app.core.broker import broker
 from app.core.metrics import MetricsMiddleware, metrics_collector
 from app.core.rate_limiter import RateLimitMiddleware
+from app.core.tasks import task_manager
 from app.schemas.common import HealthResponse
 from app.services.simulation.manager import simulation_manager
 
@@ -38,8 +40,12 @@ logger = logging.getLogger("app.request")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Capture the active asyncio event loop so threadpool calls can launch background simulation ticks
-    simulation_manager.set_event_loop(asyncio.get_running_loop())
+    loop = asyncio.get_running_loop()
+    simulation_manager.set_event_loop(loop)
+    task_manager.set_event_loop(loop)
+    await broker.start()
     yield
+    await broker.stop()
 
 
 def create_app() -> FastAPI:

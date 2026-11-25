@@ -5,7 +5,8 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
-from app.database.session import get_db
+from app.core.tasks import TaskInfo, task_manager
+from app.database.session import SessionLocal, get_db
 from app.models.user import User, UserRole
 from app.schemas.report import (
     PaginatedReportsResponse,
@@ -60,6 +61,42 @@ def create_report(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(exc),
         ) from exc
+
+
+@router.post(
+    "/generate-async",
+    response_model=TaskInfo,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Asynchronously queue a PDF analytics report generation job",
+)
+def create_report_async(
+    payload: ReportGenerateRequest,
+    current_user: User = Depends(require_roles(*REPORT_PERMITTED_ROLES)),
+    db: Session = Depends(get_db),
+) -> TaskInfo:
+    def _run_report_generation():
+        report = generate_pdf_report(db=db, req=payload, user_id=current_user.id)
+        return {"report_id": report.id, "report_code": report.report_code, "file_reference": report.file_reference}
+
+    return task_manager.submit_task("REPORT_GENERATION", _run_report_generation)
+
+
+@router.get(
+    "/tasks/{task_id}",
+    response_model=TaskInfo,
+    summary="Get background task execution status and progress",
+)
+def get_report_task_status(
+    task_id: str,
+    current_user: User = Depends(require_roles(*REPORT_PERMITTED_ROLES)),
+) -> TaskInfo:
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task '{task_id}' not found",
+        )
+    return task
 
 
 @router.get(
